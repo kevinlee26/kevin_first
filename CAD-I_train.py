@@ -17,7 +17,7 @@ import argparse
 import time
 from tqdm import tqdm
 from advertorch.attacks import LinfPGDAttack, GradientSignAttack
-from advertorch.attacks import CarliniWagnerLinfAttack
+# from advertorch.attacks import CarliniWagnerLinfAttack
 from advertorch.context import ctx_noparamgrad_and_eval
 
 # import 自己定义的文件
@@ -150,11 +150,11 @@ scheduler = optim.lr_scheduler.MultiStepLR(optimizer, args.lr_schedule, gamma=ar
 # tensorboard or logger
 writer = SummaryWriter(os.path.join(args.logs_path,args.dataset,args.model+'-adv/'))
 
-logger_ctrl = Logger(os.path.join(args.logs_path, 'ctrl.txt'), title='ctrl')
-logger_ctrl.set_names(['Epoch', 'batch_idx', 'ctrl_LI'])
-# logger_test = Logger(os.path.join(args.logs_path, 'student_results.txt'), title='student')
+# logger_ctrl = Logger(os.path.join(args.logs_path, 'ctrl.txt'), title='ctrl')
+# logger_ctrl.set_names(['Epoch', 'batch_idx', 'ctrl_LI'])
+logger_test = Logger(os.path.join(args.logs_path, 'student_results.txt'), title='student')
 # logger_test_teacher = Logger(os.path.join(args.logs_path, 'teacher_results.txt'), title='teacher')
-# logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD10 Acc', 'T or S', 'ctrl_LI'])
+logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD10 Acc', 'T or S', 'ctrl_LI'])
 # logger_test_teacher.set_names(['Epoch', 'Natural Test Acc', 'PGD10 Acc S', 'T or S'])
 # logger_smooth = Logger(os.path.join(args.logs_path, 'smooth.txt'), title='smooth')
 # logger_smooth.set_names(['Epoch', '(-1, -0.9)', '(-0.9, -0.8)', '(-0.8, -0.7)', '(-0.7, -0.6)'])
@@ -176,11 +176,6 @@ def train(epoch, optimizer, net, teacher_net, adversary):
 
     # 定义训练中需要用到的常量
     train_loss = 0.0
-    ctrl_LI_sum = 0.0
-    x1_sum = 0
-    x2_sum = 0
-    x3_sum = 0
-    x4_sum = 0
 
     for batch_idx, (inputs, targets) in enumerate(iterator):
 
@@ -201,29 +196,6 @@ def train(epoch, optimizer, net, teacher_net, adversary):
         teacher_outputs = teacher_net(inputs)
         guide = teacher_net(pert_inputs)
 
-        # _, clean_pred_s = clean_outputs.max(1)
-        # _, adver_pred_s = outputs.max(1)
-        # _, clean_pred_t = teacher_outputs.max(1)
-        # _, adver_pred_t = guide.max(1)
-
-        # clean_acc_t = clean_pred_t.eq(targets)
-        # adver_acc_t = adver_pred_t.eq(targets)
-        # for pp in range(len(outputs)):
-        #     if clean_acc_t[pp] == True and adver_acc_t[pp] == True:
-        #         x1_sum += 1
-        #     elif clean_acc_t[pp] == True and adver_acc_t[pp] == False:
-        #         x2_sum += 1
-        #     elif clean_acc_t[pp] == False and adver_acc_t[pp] == True:
-        #         x3_sum += 1
-        #     elif clean_acc_t[pp] == False and adver_acc_t[pp] == False:
-        #         x4_sum += 1
-
-        # for pp in range(len(outputs)):
-
-        #     L = 2 * F.softmax(guide, dim=1)[pp][targets[pp].item()] - 1
-        #     smooth_temp_sum.append(L.item())
-
-
         # 计算loss
         targets_onehot = F.one_hot(targets, num_classes=num_classes).float()
         # targets_onehot_clean = F.one_hot(targets, num_classes=num_classes).float()
@@ -236,9 +208,8 @@ def train(epoch, optimizer, net, teacher_net, adversary):
             targets_onehot[targets_onehot > 0.5] = 0.82
             targets_onehot[targets_onehot < 0.5] = 0.02
 
-        # JS_middle = 0.5 * (F.softmax(teacher_outputs, dim=1) + F.softmax(guide, dim=1))
+	    
         ctrl_LI = 0.1 * (KL_loss(F.log_softmax(teacher_outputs, dim=1), targets_onehot) + KL_loss(F.log_softmax(guide, dim=1), targets_onehot)).sum(dim=1)
-        # ctrl_LI = 0.1
         loss = args.lam*(1/len(outputs))*torch.sum(KL_loss(F.log_softmax(outputs, dim=1),F.softmax(teacher_outputs, dim=1)).sum(dim=1)) + args.lam*(1/len(outputs))*torch.sum(KL_loss(F.log_softmax(outputs, dim=1),F.softmax(net(inputs), dim=1)).sum(dim=1).mul(ctrl_LI))+(1.0-args.lam)*XENT_loss(net(inputs), targets)
         
         # 计算梯度
@@ -251,96 +222,16 @@ def train(epoch, optimizer, net, teacher_net, adversary):
         # logger_ctrl.append([epoch + 1, batch_idx + 1, ctrl_LI.sum()])
 
         train_loss += loss.item()
-        # ctrl_LI_sum += ctrl_LI.sum()
         iterator.set_description(str(loss.item()))
     
     # 计算epoch数据
-
     torch.cuda.synchronize()
     end = time.time()
     end_start = end-start
     logger_ctrl.append([epoch + 1, 0, train_loss/len(iterator)])
-    # for g in range(20):
-    #     bin = g / 10 - 0.9
-    #     smooth_num = list(filter(lambda i: i<bin, smooth_temp_sum))
-    #     smooth_separate.append(len(smooth_num))
-    # logger_smooth.append([epoch + 1, x1_sum, x2_sum, x3_sum, x4_sum])
-    # print需要的数据
     print(end-start)
-    # print(x1_sum)
-    # print(x2_sum)
-    # print(x3_sum)
-    # print(x4_sum)
     print('Mean Training Loss:', train_loss/len(iterator))
     return end_start, train_loss, ctrl_LI_sum
-
-
-def test(net, teacher_net, adversary_test):
-    
-    # net.eval()
-    # l = [x for (x, y) in testloader]
-    # x_test = torch.cat(l, 0)
-    # l = [y for (x, y) in testloader]
-    # y_test = torch.cat(l, 0)
-    # with torch.no_grad():
-    #     dict_adv = adversary_test.run_standard_evaluation(x_test, y_test, bs=args.batch_size)
-    # 设置进度条
-    iterator = tqdm(testloader, ncols=0, leave=False)
-
-    # 将net调为val模式
-    net.eval()
-
-    # 定义测试中需要的常量
-    adv_correct = 0
-    adv_correct_T = 0
-    adv_correct_T_S = 0
-    natural_correct = 0
-    natural_correct_T = 0
-    total = 0
-
-    for batch_idx, (inputs, targets) in enumerate(iterator):
-
-        # 加载test过程中需要的数据
-        inputs, targets = inputs.to(device), targets.to(device)
-
-        # 获取输出
-        pert_inputs = adversary_test.perturb(inputs, targets)
-        adv_outputs = net(pert_inputs)
-        # pert_inputs_T = net_T(inputs, targets)
-        # adv_outputs_T = teacher_net(pert_inputs_T)
-        natural_outputs = net(inputs)
-        natural_outputs_T = teacher_net(inputs)
-        adv_outputs_T_S = teacher_net(pert_inputs)
-        _, adv_predicted = adv_outputs.max(1)
-        # _, adv_predicted_T = adv_outputs_T.max(1)
-        _, adv_predicted_T_S = adv_outputs_T_S.max(1)
-        _, natural_predicted = natural_outputs.max(1)
-        _, natural_predicted_T = natural_outputs_T.max(1)
-        
-        adv_correct += adv_predicted.eq(targets).sum().item()
-        # adv_correct_T += adv_predicted_T.eq(targets).sum().item()
-        adv_correct_T_S += adv_predicted_T_S.eq(targets).sum().item()
-        natural_correct += natural_predicted.eq(targets).sum().item()
-        natural_correct_T += natural_predicted_T.eq(targets).sum().item()
-        total += targets.size(0)
-            
-    
-
-    # 计算batch数据并记录在进度条中
-    iterator.set_description(str(adv_predicted.eq(targets).sum().item()/targets.size(0)))
-    
-    # 计算epoch数据
-    natural_acc = 100.*natural_correct/total
-    natural_acc_T = 100.*natural_correct_T/total
-    robust_acc = 100.*adv_correct/total
-    robust_acc_T = 100.*adv_correct_T/total
-    robust_acc_T_S = 100.*adv_correct_T_S/total
-
-
-    # print需要的数据
-    print('Natural(S/T) acc:', natural_acc, '/', natural_acc_T)
-    print('Robust(S/T) acc:', robust_acc, '/', robust_acc_T)
-    return natural_acc, natural_acc_T, robust_acc, robust_acc_T_S
 
 def main():
 
@@ -353,40 +244,18 @@ def main():
         print("teacher >>>> student ")
 
         # train
-        T_end_start, _, ctrl_LI_sum = train(epoch, optimizer, net, teacher_net, adversary)
-        
-        # test
-        # for i in range(100):
-            # net.load_state_dict(torch.load(os.path.join(args.S_path, 'checkpoint_%d.pth'%(i+100)))['state_dict'])
-            # natural_val, natural_val_T, robust_val, robust_val_T_S = test(net, teacher_net, adversary_test)
-            # logger_test.append([i + 100, natural_val, robust_val, 0, 0])    
-
-        # 将epoch数据记录到tensorboard或logger中
-        # writer.add_scalar('adv-acc', ctrl_LI_sum, epoch)
-
-        # logger_test.append([epoch + 1, natural_val, robust_val, T_end_start, ctrl_LI_sum])
-        # logger_test_teacher.append([epoch + 1, natural_val_T, robust_val_T_S, 1])
+        # T_end_start, _, ctrl_LI_sum = train(epoch, optimizer, net, teacher_net, adversary)
 
         # epoch结束后更新学习率
-        scheduler.step()
+        # scheduler.step()
 
-        # 保存模型文件
-        if epoch > 99:
-            torch.save({
-                        'epoch': epoch + 1,
-                        'state_dict': net.state_dict(),
-                        'optimizer' : optimizer.state_dict(),
-                    }, os.path.join(args.S_path, 'checkpoint_%d.pth'%epoch))
-
-            # if robust_val > best_acc:
-            #     best_acc = robust_val
-            #     torch.save({
-            #             'epoch': epoch + 1,
-            #             'state_dict': net.state_dict(),
-            #             'test_nat_acc': natural_val, 
-            #             'test_pgd10_acc': robust_val,
-            #             'optimizer' : optimizer.state_dict(),
-            #         }, os.path.join(args.S_path, 'bestpoint.pth'))            
+        # # 保存模型文件
+        # if epoch > 99:
+        #     torch.save({
+        #                 'epoch': epoch + 1,
+        #                 'state_dict': net.state_dict(),
+        #                 'optimizer' : optimizer.state_dict(),
+        #             }, os.path.join(args.S_path, 'checkpoint_%d.pth'%epoch))     
             
 
 if __name__ == '__main__':
