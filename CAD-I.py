@@ -39,7 +39,6 @@ torch.cuda.manual_seed_all(1)
 # ===========定义并创建路径，设置GPU，数据集和模型===========
 parser = argparse.ArgumentParser(description='IAD-I')
 # path parameter
-parser.add_argument('--data', type=str, default='./data/', help='data_path')
 parser.add_argument('--S_path', type=str, default='./models/student/', help='student_model_path')
 parser.add_argument('--T_path', type=str, default='./models/teacher/', help='teacher_model_path')
 parser.add_argument('--logs_path', type=str, default='./logs/', help='logs_path')
@@ -60,7 +59,6 @@ parser.add_argument('--weight_decay', type=int, default=0.0002, help='weight_dec
 
 # loss parameter
 parser.add_argument('--lam', type=float, default=1.0, help='lambda')
-parser.add_argument('--temp', type=float, default=1.0, help='tempterature')
 
 # attack parameter
 parser.add_argument('--type', type=str, default='PGD', help='attack name')
@@ -79,8 +77,8 @@ device = torch.device("cuda:0")
 
 
 # make sure that every path exists
-if not os.path.exists(args.data):
-    os.makedirs(args.data)
+# if not os.path.exists(args.data):
+#     os.makedirs(args.data)
 
 if not os.path.exists(args.S_path):
     os.makedirs(args.S_path)
@@ -152,8 +150,8 @@ scheduler = optim.lr_scheduler.MultiStepLR(optimizer, args.lr_schedule, gamma=ar
 # tensorboard or logger
 writer = SummaryWriter(os.path.join(args.logs_path,args.dataset,args.model+'-adv/'))
 
-# logger_ctrl = Logger(os.path.join(args.logs_path, 'ctrl.txt'), title='ctrl')
-# logger_ctrl.set_names(['Epoch', 'batch_idx', 'ctrl_LI'])
+logger_ctrl = Logger(os.path.join(args.logs_path, 'ctrl.txt'), title='ctrl')
+logger_ctrl.set_names(['Epoch', 'batch_idx', 'ctrl_LI'])
 # logger_test = Logger(os.path.join(args.logs_path, 'student_results.txt'), title='student')
 # logger_test_teacher = Logger(os.path.join(args.logs_path, 'teacher_results.txt'), title='teacher')
 # logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD10 Acc', 'T or S', 'ctrl_LI'])
@@ -261,7 +259,7 @@ def train(epoch, optimizer, net, teacher_net, adversary):
     torch.cuda.synchronize()
     end = time.time()
     end_start = end-start
-    # logger_ctrl.append([epoch + 1, 0, train_loss/len(iterator)])
+    logger_ctrl.append([epoch + 1, 0, train_loss/len(iterator)])
     # for g in range(20):
     #     bin = g / 10 - 0.9
     #     smooth_num = list(filter(lambda i: i<bin, smooth_temp_sum))
