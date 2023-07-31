@@ -332,14 +332,14 @@ def main():
         print("teacher >>>> student ")
 
         # train
-        # T_end_start, _, ctrl_LI_sum = train(epoch, optimizer, net, teacher_net, adversary)
+        T_end_start, _, ctrl_LI_sum = train(epoch, optimizer, net, teacher_net, adversary)
         
         # test
         # for i in range(100):
-        net.load_state_dict(torch.load(os.path.join(args.S_path, 'checkpoint_112.pth'))['state_dict'])
+        # net.load_state_dict(torch.load(os.path.join(args.S_path, 'checkpoint_112.pth'))['state_dict'])
         # net.load_state_dict(torch.load(os.path.join(args.S_path, 'checkpoint_%d.pth'%(i+100)))['state_dict'])
-        natural_val, natural_val_T, robust_val, robust_val_T_S = test(net, teacher_net, adversary_test)
-        logger_test.append([epoch + 1, natural_val, robust_val, 0, 0])
+        # natural_val, natural_val_T, robust_val, robust_val_T_S = test(net, teacher_net, adversary_test)
+        # logger_test.append([epoch + 1, natural_val, robust_val, 0, 0])
 
         # 将epoch数据记录到tensorboard或logger中
         # writer.add_scalar('adv-acc', ctrl_LI_sum, epoch)
@@ -351,12 +351,12 @@ def main():
         scheduler.step()
 
         # 保存模型文件
-        # if epoch > 99:
-        #     torch.save({
-        #                 'epoch': epoch + 1,
-        #                 'state_dict': net.state_dict(),
-        #                 'optimizer' : optimizer.state_dict(),
-        #             }, os.path.join(args.S_path, 'checkpoint_%d.pth'%epoch))
+        if epoch > 99:
+            torch.save({
+                        'epoch': epoch + 1,
+                        'state_dict': net.state_dict(),
+                        'optimizer' : optimizer.state_dict(),
+                    }, os.path.join(args.S_path, 'checkpoint_%d.pth'%epoch))
 
             # if robust_val > best_acc:
             #     best_acc = robust_val
