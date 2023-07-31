@@ -231,7 +231,7 @@ def train(epoch, optimizer, net, teacher_net, adversary):
     logger_ctrl.append([epoch + 1, 0, train_loss/len(iterator)])
     print(end-start)
     print('Mean Training Loss:', train_loss/len(iterator))
-    return end_start, train_loss, ctrl_LI_sum
+    return end_start, train_loss
 
 def main():
 
@@ -244,18 +244,18 @@ def main():
         print("teacher >>>> student ")
 
         # train
-        # T_end_start, _, ctrl_LI_sum = train(epoch, optimizer, net, teacher_net, adversary)
+        T_end_start, _ = train(epoch, optimizer, net, teacher_net, adversary)
 
-        # epoch结束后更新学习率
-        # scheduler.step()
+        epoch结束后更新学习率
+        scheduler.step()
 
-        # # 保存模型文件
-        # if epoch > 99:
-        #     torch.save({
-        #                 'epoch': epoch + 1,
-        #                 'state_dict': net.state_dict(),
-        #                 'optimizer' : optimizer.state_dict(),
-        #             }, os.path.join(args.S_path, 'checkpoint_%d.pth'%epoch))     
+        # 保存模型文件
+        if epoch > 99:
+            torch.save({
+                        'epoch': epoch + 1,
+                        'state_dict': net.state_dict(),
+                        'optimizer' : optimizer.state_dict(),
+                    }, os.path.join(args.S_path, 'checkpoint_%d.pth'%epoch))     
             
 
 if __name__ == '__main__':
