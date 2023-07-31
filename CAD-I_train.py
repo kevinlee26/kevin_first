@@ -150,14 +150,8 @@ scheduler = optim.lr_scheduler.MultiStepLR(optimizer, args.lr_schedule, gamma=ar
 # tensorboard or logger
 writer = SummaryWriter(os.path.join(args.logs_path,args.dataset,args.model+'-adv/'))
 
-# logger_ctrl = Logger(os.path.join(args.logs_path, 'ctrl.txt'), title='ctrl')
-# logger_ctrl.set_names(['Epoch', 'batch_idx', 'ctrl_LI'])
-logger_test = Logger(os.path.join(args.logs_path, 'student_results.txt'), title='student')
-# logger_test_teacher = Logger(os.path.join(args.logs_path, 'teacher_results.txt'), title='teacher')
-logger_test.set_names(['Epoch', 'Natural Test Acc', 'PGD10 Acc', 'T or S', 'ctrl_LI'])
-# logger_test_teacher.set_names(['Epoch', 'Natural Test Acc', 'PGD10 Acc S', 'T or S'])
-# logger_smooth = Logger(os.path.join(args.logs_path, 'smooth.txt'), title='smooth')
-# logger_smooth.set_names(['Epoch', '(-1, -0.9)', '(-0.9, -0.8)', '(-0.8, -0.7)', '(-0.7, -0.6)'])
+logger_ctrl = Logger(os.path.join(args.logs_path, 'ctrl.txt'), title='ctrl')
+logger_ctrl.set_names(['Epoch', 'batch_idx', 'ctrl_LI'])
 
 adversary = LinfPGDAttack(net, loss_fn=XENT_loss, eps=args.epsilon, nb_iter=args.iter_train, eps_iter=args.step, rand_init=True, clip_min=0.0, clip_max=1.0, targeted=False)
 adversary_test = LinfPGDAttack(net, loss_fn=XENT_loss, eps=args.epsilon, nb_iter=args.iter_test, eps_iter=args.step, rand_init=True, clip_min=0.0, clip_max=1.0, targeted=False)
