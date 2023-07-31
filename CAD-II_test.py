@@ -175,84 +175,6 @@ adversary_test = LinfPGDAttack(net, loss_fn=XENT_loss, eps=args.epsilon, nb_iter
 # adversary_test = CarliniWagnerLinfAttack(net, max_iterations=1, num_classes=num_classes)
 # adversary_test = AutoAttack(net, norm='Linf', eps=args.epsilon, version='standard')
 # adversary_test = GradientSignAttack(net, loss_fn=XENT_loss, eps=args.epsilon, targeted=False)
-def train(epoch, optimizer, net, teacher_net, adversary):
-    
-    # 开始计时并设置进度条
-    torch.cuda.synchronize()
-    start = time.time()
-    iterator = tqdm(trainloader, ncols=0, leave=False)
-
-    # 将net调为train模式
-    net.train()
-
-    # 定义训练中需要用到的常量
-    train_loss = 0.0
-    ctrl_LI_sum = 0.0
-    smooth_temp_sum = []
-
-    for batch_idx, (inputs, targets) in enumerate(iterator):
-
-        # 加载batch迭代中需要的数据
-        inputs, targets = inputs.to(device), targets.to(device)
-        Alpha = torch.zeros(len(inputs)).cuda()
-
-        # optimizer 梯度置零  
-        optimizer.zero_grad()
-
-        # 获取输出
-        with ctx_noparamgrad_and_eval(net):
-            pert_inputs = adversary.perturb(inputs, targets)
-        
-        outputs = net(pert_inputs)
-
-        teacher_outputs = teacher_net(inputs)
-        st_outputs = st_teacher_net(pert_inputs)
-        guide = teacher_net(pert_inputs)
-
-        # for pp in range(len(outputs)):
-
-        #     L = 2 * F.softmax(guide, dim=1)[pp][targets[pp].item()] - 1
-        #     smooth_temp_sum.append(L.item())
-
-
-        # 计算loss
-        targets_onehot = F.one_hot(targets, num_classes=num_classes).float()
-        # targets_onehot_clean = F.one_hot(targets, num_classes=num_classes).float()
-        if epoch <= 40:
-            targets_onehot[targets_onehot > 0.5] = 0.91
-            targets_onehot[targets_onehot < 0.5] = 0.01
-        elif 40 <= epoch <= 200:
-            targets_onehot[targets_onehot > 0.5] = 0.82
-            targets_onehot[targets_onehot < 0.5] = 0.02
-
-        # JS_middle = 0.5 * (F.softmax(teacher_outputs, dim=1) + F.softmax(guide, dim=1))
-        ctrl_LI = 0.1 * (KL_loss(F.log_softmax(teacher_outputs, dim=1), targets_onehot) + KL_loss(F.log_softmax(guide, dim=1), targets_onehot)).sum(dim=1)
-        # ctrl_LI = 4.0
-        loss = (1-args.alpha1-args.alpha2)*XENT_loss(outputs, targets)+args.alpha1*((1/len(outputs))*torch.sum(KL_loss(F.log_softmax(outputs, dim=1),F.softmax(guide, dim=1)).sum(dim=1)) + (1/len(outputs))*torch.sum(KL_loss(F.log_softmax(outputs, dim=1),F.softmax(net(inputs), dim=1)).sum(dim=1).mul(ctrl_LI)))+args.alpha2*(1/len(outputs))*torch.sum(KL_loss(F.log_softmax(outputs, dim=1),F.softmax(st_outputs, dim=1)).sum(dim=1))
-        
-        # 计算梯度
-        loss.backward()
-
-        # 梯度回传
-        optimizer.step()
-
-        # 计算batch数据并记录在进度条中
-        # logger_ctrl.append([epoch + 1, batch_idx + 1, ctrl_LI.sum()])
-
-        train_loss += loss.item()
-        # ctrl_LI_sum += ctrl_LI.sum()
-        iterator.set_description(str(loss.item()))
-    
-    # 计算epoch数据
-    torch.cuda.synchronize()
-    end = time.time()
-    end_start = end-start
-    logger_ctrl.append([epoch + 1, 0, train_loss/len(iterator)])
-    # print需要的数据
-    print(end-start)
-    print('Mean Training Loss:', train_loss/len(iterator))
-    return end_start, train_loss, ctrl_LI_sum
-
 
 def test(net, teacher_net, adversary_test):
     
@@ -330,9 +252,6 @@ def main():
 
         # 定义main函数中需要的常量
         print("teacher >>>> student ")
-
-        # train
-        # T_end_start, _, ctrl_LI_sum = train(epoch, optimizer, net, teacher_net, adversary)
         
         # test
         for i in range(100):
@@ -340,33 +259,6 @@ def main():
             net.load_state_dict(torch.load(os.path.join(args.S_path, 'checkpoint_%d.pth'%(i+100)))['state_dict'])
             natural_val, natural_val_T, robust_val, robust_val_T_S = test(net, teacher_net, adversary_test)
             logger_test.append([epoch + 1, natural_val, robust_val, 0, 0])
-
-        # 将epoch数据记录到tensorboard或logger中
-        # writer.add_scalar('adv-acc', ctrl_LI_sum, epoch)
-
-        # logger_test.append([epoch + 1, natural_val, robust_val, T_end_start, ctrl_LI_sum])
-        # logger_test_teacher.append([epoch + 1, natural_val_T, robust_val_T_S, 1])
-
-        # epoch结束后更新学习率
-        # scheduler.step()
-
-        # # 保存模型文件
-        # if epoch > 99:
-        #     torch.save({
-        #                 'epoch': epoch + 1,
-        #                 'state_dict': net.state_dict(),
-        #                 'optimizer' : optimizer.state_dict(),
-        #             }, os.path.join(args.S_path, 'checkpoint_%d.pth'%epoch))
-
-            # if robust_val > best_acc:
-            #     best_acc = robust_val
-            #     torch.save({
-            #             'epoch': epoch + 1,
-            #             'state_dict': net.state_dict(),
-            #             'test_nat_acc': natural_val, 
-            #             'test_pgd10_acc': robust_val,
-            #             'optimizer' : optimizer.state_dict(),
-            #         }, os.path.join(args.S_path, 'bestpoint.pth'))
 
 
 if __name__ == '__main__':
