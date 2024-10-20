@@ -1,256 +1,181 @@
-# import torch相关文件
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-import torch.backends.cudnn as cudnn
-import torchvision
-import torchvision.transforms as transforms
-
-from torch.utils.tensorboard import SummaryWriter
-# import 非torch相关文件
-import numpy as np
-import random
-import ast
-import os
 import argparse
 import time
-from tqdm import tqdm
-from advertorch.attacks import LinfPGDAttack, GradientSignAttack
-# from advertorch.attacks import CarliniWagnerLinfAttack
-from advertorch.context import ctx_noparamgrad_and_eval
+from typing import Optional
 
-# import 自己定义的文件
-from utils import Logger
-from models import *
-from autoattack import AutoAttack
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim import Optimizer
+from torch.utils.data import DataLoader
 
-# 固定随机数保证可复现
-torch.manual_seed(1)
-torch.cuda.manual_seed(1)
-np.random.seed(1)
-random.seed(1)
-torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.deterministic = True
-torch.cuda.manual_seed_all(1)
+from architectures import ARCHITECTURES
+from datasets import DATASETS
+from train_utils import AverageMeter, accuracy, log, requires_grad_, test
+from train_utils import prologue
+
+from consistency import consistency_loss
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# =======================训练前准备========================
-# ===========定义并创建路径，设置GPU，数据集和模型===========
-parser = argparse.ArgumentParser(description='IAD-I')
-# path parameter
-parser.add_argument('--S_path', type=str, default='./models/student/', help='student_model_path')
-parser.add_argument('--T_path', type=str, default='./models/teacher/', help='teacher_model_path')
-parser.add_argument('--logs_path', type=str, default='./logs/', help='logs_path')
+parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
+parser.add_argument('--dataset', default='cifar10', type=str, choices=DATASETS)
+parser.add_argument('--arch', default='cifar_resnet110', type=str, choices=ARCHITECTURES)
+parser.add_argument('--workers', default=4, type=int, metavar='N',
+                    help='number of data loading workers (default: 4)')
+parser.add_argument('--epochs', default=150, type=int, metavar='N',
+                    help='number of total epochs to run')
+parser.add_argument('--batch', default=256, type=int, metavar='N',
+                    help='batchsize (default: 256)')
+parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
+                    help='initial learning rate', dest='lr')
+parser.add_argument('--lr_step_size', type=int, default=50,
+                    help='How often to decrease learning by gamma.')
+parser.add_argument('--gamma', type=float, default=0.1,
+                    help='LR is multiplied by gamma on schedule.')
+parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
+                    help='momentum')
+parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
+                    metavar='W', help='weight decay (default: 1e-4)')
+parser.add_argument('--noise_sd', default=1.0, type=float,
+                    help="standard deviation of Gaussian noise for data augmentation")
+parser.add_argument('--print-freq', default=10, type=int,
+                    metavar='N', help='print frequency (default: 10)')
+parser.add_argument('--id', default=None, type=int,
+                    help='experiment id, `randint(10000)` if None')
 
-# input parameter
-parser.add_argument('--dataset', type=str, default='CIFAR10', help='dataset')
-parser.add_argument('--batch_size', type=int, default=128, help='batch_size')
-parser.add_argument('--epochs', type=int, default=200, help='epochs')
+#####################
+# Options added by Salman et al. (2019)
+parser.add_argument('--resume', action='store_true',
+                    help='if true, tries to resume training from existing checkpoint')
+parser.add_argument('--pretrained-model', type=str, default='logs_teacher/checkpoint.pth.tar',
+                    help='Path to a pretrained model')
 
-# model parameter
-parser.add_argument('--model', type=str, default='ResNet18', help='model')
-parser.add_argument('--T_model', type=str, default='ResNet18', help='model')
-# optimizer parameter
-parser.add_argument('--lr', type=int, default=0.1, help='initial learning rate')
-parser.add_argument('--lr_schedule', type=int, nargs='+', default=[100, 150], help='Decrease learning rate at these epochs')
-parser.add_argument('--lr_factor', default=0.1, type=float, help='factor by which to decrease lr')
-parser.add_argument('--weight_decay', type=int, default=0.0002, help='weight_decay')
+#####################
+parser.add_argument('--num-noise-vec', default=2, type=int,
+                    help="number of noise vectors. `m` in the paper.")
+parser.add_argument('--lbd', default=10., type=float)
+parser.add_argument('--eta', default=0.5, type=float)
+parser.add_argument('--dis', default=0.1, type=float)
 
-# loss parameter
-parser.add_argument('--lam', type=float, default=1.0, help='lambda')
+# Options when SmoothAdv is used (Salman et al., 2019)
+parser.add_argument('--adv-training', action='store_true')
+parser.add_argument('--epsilon', default=512, type=float)
+parser.add_argument('--num-steps', default=4, type=int)
+parser.add_argument('--warmup', default=10, type=int, help="Number of epochs over which "
+                                                           "the maximum allowed perturbation increases linearly "
+                                                           "from zero to args.epsilon.")
 
-# attack parameter
-parser.add_argument('--type', type=str, default='PGD', help='attack name')
-parser.add_argument('--epsilon', type=float, default=8/255, help='attack norm')
-parser.add_argument('--iter_train', type=int, default=10, help='attack iterations during training')
-parser.add_argument('--iter_test', type=int, default=20, help='attack iterations during testing')
-parser.add_argument('--step', type=float, default=2/255, help='single step')
-
-# training parameter
 args = parser.parse_args()
+args.outdir = f"logs"
+args.epsilon /= 256.0
 
-# 选定训练过程中的GPU
-os.environ["CUDA_VISIBLE_DEVICES"] = "1" 
-device = torch.device("cuda:0")
-
-
-
-# make sure that every path exists
-# if not os.path.exists(args.data):
-#     os.makedirs(args.data)
-
-if not os.path.exists(args.S_path):
-    os.makedirs(args.S_path)
-
-if not os.path.exists(args.T_path):
-    os.makedirs(args.T_path)
-
-if not os.path.exists(args.logs_path):
-    os.makedirs(args.logs_path)
-
-# dataset
-print('==> Preparing data..')
-transform_train = transforms.Compose([
-    transforms.RandomCrop(32, padding=4),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-])
-transform_test = transforms.Compose([
-    transforms.ToTensor(),
-])
-if args.dataset == 'CIFAR10':
-    trainset = torchvision.datasets.CIFAR10(root='~/data/cifar-10', train=True, download=True, transform=transform_train)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=2)
-    testset = torchvision.datasets.CIFAR10(root='~/data/cifar-10', train=False, download=True, transform=transform_test)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=2)
-    num_classes = 10
-elif args.dataset == 'CIFAR100':
-    trainset = torchvision.datasets.CIFAR100(root='~/data/cifar-100', train=True, download=True, transform=transform_train)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=2)
-    testset = torchvision.datasets.CIFAR100(root='~/data/cifar-100', train=False, download=True, transform=transform_test)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=args.batch_sizes, shuffle=False, num_workers=2)
-    num_classes = 100
-
-# T_model and S_model
-print('==> Building model..'+args.model)
-# student
-if args.model == 'MobileNetV2':
-	net = ResNet18(num_classes=num_classes)
-elif args.model == 'WideResNet':
-	net = ResNet18(num_classes=num_classes)
-elif args.model == 'ResNet18':
-	net = ResNet18(num_classes=num_classes)
-net = net.to(device)
-# net.load_state_dict(torch.load(os.path.join(args.S_path, 'checkpoint_104_IAD.pth'))['state_dict'])
-
-# teacher
-if args.T_model == 'MobileNetV2':
-    teacher_net = ResNet18(num_classes=num_classes)
-elif args.T_model == 'WideResNet':
-    teacher_net = ResNet18(num_classes=num_classes)
-elif args.T_model == 'ResNet18':
-    teacher_net = ResNet18(num_classes=num_classes)
-teacher_net = teacher_net.to(device)
-for param in teacher_net.parameters():
-    param.requires_grad = False
-
-print('==> Loading teacher..')
-teacher_net.load_state_dict(torch.load(os.path.join(args.T_path, 'bestpoint.pth'))['state_dict'])
-teacher_net.eval()
-
-# loss
-KL_loss = nn.KLDivLoss(reduction='none')
-XENT_loss = nn.CrossEntropyLoss()
-
-# optimizer
-optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=2e-4)
-scheduler = optim.lr_scheduler.MultiStepLR(optimizer, args.lr_schedule, gamma=args.lr_factor)
-
-# tensorboard or logger
-writer = SummaryWriter(os.path.join(args.logs_path,args.dataset,args.model+'-adv/'))
-
-logger_ctrl = Logger(os.path.join(args.logs_path, 'ctrl.txt'), title='ctrl')
-logger_ctrl.set_names(['Epoch', 'batch_idx', 'ctrl_LI'])
-
-adversary = LinfPGDAttack(net, loss_fn=XENT_loss, eps=args.epsilon, nb_iter=args.iter_train, eps_iter=args.step, rand_init=True, clip_min=0.0, clip_max=1.0, targeted=False)
-adversary_test = LinfPGDAttack(net, loss_fn=XENT_loss, eps=args.epsilon, nb_iter=args.iter_test, eps_iter=args.step, rand_init=True, clip_min=0.0, clip_max=1.0, targeted=False)
-# adversary_test = AutoAttack(net, norm='Linf', eps=args.epsilon, version='standard')
-# adversary_test = GradientSignAttack(net, loss_fn=XENT_loss, eps=args.epsilon, targeted=False)
-# adversary_test = CarliniWagnerLinfAttack(net, max_iterations=1, num_classes=num_classes)
-def train(epoch, optimizer, net, teacher_net, adversary):
-    
-    # 开始计时并设置进度条
-    torch.cuda.synchronize()
-    start = time.time()
-    iterator = tqdm(trainloader, ncols=0, leave=False)
-
-    # 将net调为train模式
-    net.train()
-
-    # 定义训练中需要用到的常量
-    train_loss = 0.0
-
-    for batch_idx, (inputs, targets) in enumerate(iterator):
-
-        # 加载batch迭代中需要的数据
-        inputs, targets = inputs.to(device), targets.to(device)
-        Alpha = torch.zeros(len(inputs)).cuda()
-
-        # optimizer 梯度置零  
-        optimizer.zero_grad()
-
-        # 获取输出
-        with ctx_noparamgrad_and_eval(net):
-            pert_inputs = adversary.perturb(inputs, targets)
-        
-        outputs = net(pert_inputs)
-        clean_outputs = net(inputs)
-
-        teacher_outputs = teacher_net(inputs)
-        guide = teacher_net(pert_inputs)
-
-        # 计算loss
-        targets_onehot = F.one_hot(targets, num_classes=num_classes).float()
-        # targets_onehot_clean = F.one_hot(targets, num_classes=num_classes).float()
-        # targets_onehot_clean[targets_onehot > 0.5] = 0.91
-        # targets_onehot_clean[targets_onehot < 0.5] = 0.01
-        if epoch <= 40:
-            targets_onehot[targets_onehot > 0.5] = 0.91
-            targets_onehot[targets_onehot < 0.5] = 0.01
-        elif 40 <= epoch <= 200:
-            targets_onehot[targets_onehot > 0.5] = 0.82
-            targets_onehot[targets_onehot < 0.5] = 0.02
-
-	    
-        ctrl_LI = 0.1 * (KL_loss(F.log_softmax(teacher_outputs, dim=1), targets_onehot) + KL_loss(F.log_softmax(guide, dim=1), targets_onehot)).sum(dim=1)
-        loss = args.lam*(1/len(outputs))*torch.sum(KL_loss(F.log_softmax(outputs, dim=1),F.softmax(teacher_outputs, dim=1)).sum(dim=1)) + args.lam*(1/len(outputs))*torch.sum(KL_loss(F.log_softmax(outputs, dim=1),F.softmax(net(inputs), dim=1)).sum(dim=1).mul(ctrl_LI))+(1.0-args.lam)*XENT_loss(net(inputs), targets)
-        
-        # 计算梯度
-        loss.backward()
-
-        # 梯度回传
-        optimizer.step()
-
-        # 计算batch数据并记录在进度条中
-        # logger_ctrl.append([epoch + 1, batch_idx + 1, ctrl_LI.sum()])
-
-        train_loss += loss.item()
-        iterator.set_description(str(loss.item()))
-    
-    # 计算epoch数据
-    torch.cuda.synchronize()
-    end = time.time()
-    end_start = end-start
-    logger_ctrl.append([epoch + 1, 0, train_loss/len(iterator)])
-    print(end-start)
-    print('Mean Training Loss:', train_loss/len(iterator))
-    return end_start, train_loss
 
 def main():
+    train_loader, test_loader, criterion, model, model_t, optimizer, scheduler, \
+    starting_epoch, logfilename, logfilename_1, model_path, device = prologue(args)
 
-    # 定义main函数中需要的常量
-    best_acc = 0
 
-    for epoch in range(args.epochs):
+    for epoch in range(starting_epoch, args.epochs):
 
-        # 定义main函数中需要的常量
-        print("teacher >>>> student ")
+        before = time.time()
+        train_loss, train_acc = train(train_loader, model, model_t, criterion, optimizer, epoch,
+                                      args.noise_sd, device, logfilename_1)
+        test_loss, test_acc = test(test_loader, model, criterion, epoch, args.noise_sd, device, args.print_freq)
+        after = time.time()
 
-        # train
-        T_end_start, _ = train(epoch, optimizer, net, teacher_net, adversary)
+        log(logfilename, "{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.3}".format(
+            epoch, after - before,
+            scheduler.get_lr()[0], train_loss, train_acc, test_loss, test_acc))
 
-        epoch结束后更新学习率
+        # In PyTorch 1.1.0 and later, you should call `optimizer.step()` before `lr_scheduler.step()`.
+        # See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
         scheduler.step()
 
-        # 保存模型文件
-        if epoch > 99:
-            torch.save({
-                        'epoch': epoch + 1,
-                        'state_dict': net.state_dict(),
-                        'optimizer' : optimizer.state_dict(),
-                    }, os.path.join(args.S_path, 'checkpoint_%d.pth'%epoch))     
-            
+        torch.save({
+            'epoch': epoch + 1,
+            'arch': args.arch,
+            'state_dict': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+        }, model_path)
 
-if __name__ == '__main__':
+
+def _chunk_minibatch(batch, num_batches):
+    X, y = batch
+    batch_size = len(X) // num_batches
+    for i in range(num_batches):
+        yield X[i*batch_size : (i+1)*batch_size], y[i*batch_size : (i+1)*batch_size]
+
+
+def train(loader: DataLoader, model: torch.nn.Module, model_t: torch.nn.Module, criterion, optimizer: Optimizer, epoch: int, noise_sd: float,
+          device: torch.device, logfilename_1):
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses = AverageMeter()
+    losses_reg = AverageMeter()
+    top1 = AverageMeter()
+    top5 = AverageMeter()
+    end = time.time()
+
+    # switch to train mode
+    model.train()
+    requires_grad_(model, True)
+    model_t.eval()
+    requires_grad_(model_t, False)
+
+    for i, batch in enumerate(loader):
+        # measure data loading time
+        data_time.update(time.time() - end)
+
+        mini_batches = _chunk_minibatch(batch, args.num_noise_vec)
+        for inputs, targets in mini_batches:
+            inputs, targets = inputs.to(device), targets.to(device)
+            batch_size = inputs.size(0)
+
+            noises = [torch.randn_like(inputs, device=device) * noise_sd
+                      for _ in range(args.num_noise_vec)]
+
+            # augment inputs with noise
+            inputs_c = torch.cat([inputs + noise for noise in noises], dim=0)
+            targets_c = targets.repeat(args.num_noise_vec)
+
+            logits = model(inputs_c)
+            logits_t = model_t(inputs_c)
+
+            logits_chunk = torch.chunk(logits, args.num_noise_vec, dim=0)
+            logits_t_chunk = torch.chunk(logits_t, args.num_noise_vec, dim=0)            
+            loss_con = consistency_loss(logits_chunk, logits_t_chunk, logfilename_1, args.lbd, targets_c, epoch, args.dis, args.eta)
+
+            loss_xent = criterion(logits, targets_c)
+            loss = loss_xent + loss_con
+            
+            acc1, acc5 = accuracy(logits, targets_c, topk=(1, 5))
+            losses.update(loss_xent.item(), batch_size)
+            losses_reg.update(loss_con.item(), batch_size)
+            top1.update(acc1.item(), batch_size)
+            top5.update(acc5.item(), batch_size)
+
+            # compute gradient and do SGD step
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if i % args.print_freq == 0:
+            print('Epoch: [{0}][{1}/{2}]\t'
+                  'Time {batch_time.avg:.3f}\t'
+                  'Data {data_time.avg:.3f}\t'
+                  'Loss {loss.avg:.4f}\t'
+                  'Acc@1 {top1.avg:.3f}\t'
+                  'Acc@5 {top5.avg:.3f}'.format(
+                epoch, i, len(loader), batch_time=batch_time,
+                data_time=data_time, loss=losses, top1=top1, top5=top5))
+
+    return (losses.avg, top1.avg)
+
+if __name__ == "__main__":
     main()
